@@ -1,9 +1,7 @@
+import { GoogleGenerativeAI } from '@google/generative-ai'
 import { NextResponse } from 'next/server'
 
-type ConversationMessage = {
-  role: 'user' | 'assistant'
-  content: string
-}
+type ConversationMessage = { role: 'user' | 'assistant'; content: string }
 
 export async function POST(request: Request) {
   try {
@@ -15,55 +13,40 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Please enter a question.' }, { status: 400 })
     }
 
-    const safeConversation: ConversationMessage[] = conversation
+    const apiKey = process.env.GEMINI_API_KEY
+    if (!apiKey) {
+      console.error('[v0] Gemini is not configured')
+      return NextResponse.json({ success: false, error: "Sorry, I couldn't process that right now." }, { status: 500 })
+    }
+
+    const history: ConversationMessage[] = conversation
       .filter((item: unknown): item is ConversationMessage => {
         if (!item || typeof item !== 'object') return false
         const candidate = item as Record<string, unknown>
         return (candidate.role === 'user' || candidate.role === 'assistant') && typeof candidate.content === 'string'
       })
-      .slice(-10)
+      .slice(-12)
       .map((item: ConversationMessage) => ({ role: item.role, content: item.content.slice(0, 4000) }))
 
-    const apiKey = process.env.OPENAI_API_KEY_2
-    if (!apiKey) {
-      return NextResponse.json({ success: false, error: 'OpenAI is not configured.' }, { status: 500 })
-    }
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.7,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are SHAGNEX, a concise, helpful voice-first AI assistant. Answer clearly and naturally for spoken audio. If the user asks for current information, say what you know and avoid inventing live facts.',
-          },
-          ...safeConversation,
-          { role: 'user', content: message },
-        ],
-      }),
+    const client = new GoogleGenerativeAI(apiKey)
+    const model = client.getGenerativeModel({
+      model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+      systemInstruction: 'You are SHAGNEX, a concise, warm personal AI assistant. Answer clearly and naturally for both text and spoken audio. Preserve context across follow-up questions. Never mention internal providers, APIs, keys, or implementation details. If you are unsure about current facts, say so rather than inventing them.',
     })
+    const chat = model.startChat({
+      history: history.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
+      generationConfig: { temperature: 0.7, maxOutputTokens: 1200 },
+    })
+    const result = await chat.sendMessage(message)
+    const answer = result.response.text().trim()
 
-    if (!response.ok) {
-      const details = await response.text()
-      console.error('[v0] OpenAI response error:', response.status, details)
-      return NextResponse.json({ success: false, error: 'OpenAI could not generate a response.' }, { status: 502 })
-    }
-
-    const result = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
-    const answer = result.choices?.[0]?.message?.content?.trim()
     if (!answer) {
-      return NextResponse.json({ success: false, error: 'Unable to get a response right now.' }, { status: 502 })
+      return NextResponse.json({ success: false, error: "Sorry, I couldn't process that right now." }, { status: 502 })
     }
 
     return NextResponse.json({ success: true, message: answer })
   } catch (error) {
-    console.error('[v0] AI Gateway chat error:', error)
-    return NextResponse.json({ success: false, error: 'The assistant is temporarily unavailable. Please try again.' }, { status: 502 })
+    console.error('[v0] Gemini chat error:', error)
+    return NextResponse.json({ success: false, error: 'I\'m temporarily unavailable. Please try again.' }, { status: 502 })
   }
 }

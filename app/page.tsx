@@ -2,13 +2,14 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 
-type AssistantState = 'ready' | 'listening' | 'thinking' | 'speaking' | 'error'
+type AssistantState = 'ready' | 'listening' | 'user-speaking' | 'thinking' | 'speaking' | 'error'
 type Message = { id: string; role: 'user' | 'assistant'; content: string; timestamp: number; source: 'text' | 'voice' }
 
 declare global {
   interface Window { webkitSpeechRecognition?: new () => SpeechRecognition; SpeechRecognition?: new () => SpeechRecognition }
-  interface SpeechRecognition extends EventTarget { continuous: boolean; interimResults: boolean; lang: string; start: () => void; stop: () => void; abort: () => void; onresult: ((event: SpeechRecognitionEvent) => void) | null; onend: (() => void) | null; onerror: (() => void) | null }
+  interface SpeechRecognition extends EventTarget { continuous: boolean; interimResults: boolean; lang: string; start: () => void; stop: () => void; abort: () => void; onresult: ((event: SpeechRecognitionEvent) => void) | null; onend: (() => void) | null; onerror: ((event: SpeechRecognitionErrorEvent) => void) | null }
   interface SpeechRecognitionEvent extends Event { results: SpeechRecognitionResultList }
+  interface SpeechRecognitionErrorEvent extends Event { error: string }
 }
 
 function Face({ state }: { state: AssistantState }) {
@@ -22,81 +23,111 @@ export default function Page() {
   const [messages, setMessages] = useState<Message[]>([])
   const [supported, setSupported] = useState(true)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
-  const shouldContinueRef = useRef(false)
+  const shouldListenRef = useRef(false)
+  const stateRef = useRef<AssistantState>('ready')
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const speechRef = useRef<SpeechSynthesisUtterance | null>(null)
   const conversationRef = useRef<Message[]>([])
+  const requestRef = useRef<AbortController | null>(null)
+  const speakingIdRef = useRef(0)
+  const processingRef = useRef(false)
+  const startListeningRef = useRef<() => void>(() => {})
+
+  const setAssistantState = useCallback((next: AssistantState) => { stateRef.current = next; setState(next) }, [])
+
+  const stopPlayback = useCallback(() => {
+    speakingIdRef.current += 1
+    audioRef.current?.pause()
+    audioRef.current = null
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+    speechRef.current = null
+  }, [])
+
+  const finishSpeaking = useCallback(() => {
+    if (shouldListenRef.current) { setAssistantState('listening'); startListeningRef.current() } else setAssistantState('ready')
+  }, [setAssistantState])
 
   const speak = useCallback(async (text: string) => {
-    setState('speaking')
+    stopPlayback()
+    const speakingId = speakingIdRef.current
+    setAssistantState('speaking')
     try {
       const response = await fetch('/api/voice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
-      if (!response.ok) throw new Error('Voice unavailable')
+      if (!response.ok) throw new Error('voice')
       const url = URL.createObjectURL(await response.blob())
       const audio = new Audio(url)
       audioRef.current = audio
-      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; setState(shouldContinueRef.current ? 'listening' : 'ready'); if (shouldContinueRef.current) startListening() }
-      audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; setState(shouldContinueRef.current ? 'listening' : 'ready') }
+      audio.onended = () => { URL.revokeObjectURL(url); if (speakingId === speakingIdRef.current) finishSpeaking() }
+      audio.onerror = () => { URL.revokeObjectURL(url); if (speakingId === speakingIdRef.current) finishSpeaking() }
       await audio.play()
     } catch {
+      if (speakingId !== speakingIdRef.current) return
       if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel()
         const utterance = new SpeechSynthesisUtterance(text)
+        speechRef.current = utterance
         utterance.rate = 0.96
-        utterance.onend = () => { setState(shouldContinueRef.current ? 'listening' : 'ready'); if (shouldContinueRef.current) startListening() }
+        utterance.onend = () => { if (speakingId === speakingIdRef.current) finishSpeaking() }
+        utterance.onerror = () => { if (speakingId === speakingIdRef.current) finishSpeaking() }
         window.speechSynthesis.speak(utterance)
-      } else setState(shouldContinueRef.current ? 'listening' : 'ready')
+      } else finishSpeaking()
     }
-  }, [])
+  }, [finishSpeaking, setAssistantState, stopPlayback])
 
   const ask = useCallback(async (text: string, source: 'text' | 'voice') => {
     const clean = text.trim()
-    if (!clean || state === 'thinking') return
+    if (!clean || processingRef.current) return
+    recognitionRef.current?.abort()
+    processingRef.current = true
     const userMessage: Message = { id: crypto.randomUUID(), role: 'user', content: clean, timestamp: Date.now(), source }
     conversationRef.current = [...conversationRef.current, userMessage]
     setMessages((current) => [...current, userMessage])
-    setTranscript(clean)
-    setInput('')
-    setState('thinking')
+    setTranscript(clean); setInput(''); setAssistantState('thinking')
+    requestRef.current?.abort()
+    const controller = new AbortController()
+    requestRef.current = controller
     try {
-      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: clean, conversation: conversationRef.current.map(({ role, content }) => ({ role, content })) }) })
-      const data = await response.json()
-      if (!response.ok || !data.success || typeof data.message !== 'string') throw new Error(data.error || 'Unable to get a response right now.')
+      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ message: clean, conversation: conversationRef.current.map(({ role, content }) => ({ role, content })) }) })
+      const data = await response.json() as { success?: boolean; message?: string; error?: string }
+      if (!response.ok || !data.success || !data.message) throw new Error(data.error || "Sorry, I couldn't process that right now.")
       const assistantMessage: Message = { id: crypto.randomUUID(), role: 'assistant', content: data.message, timestamp: Date.now(), source: 'voice' }
       conversationRef.current = [...conversationRef.current, assistantMessage]
       setMessages((current) => [...current, assistantMessage])
       await speak(data.message)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to get a response right now.'
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: message, timestamp: Date.now(), source: 'text' }])
-      setState('error')
-    }
-  }, [speak, state])
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: error instanceof Error ? error.message : 'Sorry, I couldn\'t process that right now.', timestamp: Date.now(), source: 'text' }])
+      setAssistantState('error')
+    } finally { processingRef.current = false; requestRef.current = null }
+  }, [setAssistantState, speak])
 
   const startListening = useCallback(() => {
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition
     if (!Recognition) { setSupported(false); return }
-    shouldContinueRef.current = true
+    shouldListenRef.current = true
+    recognitionRef.current?.abort()
     const recognition = new Recognition()
-    recognition.continuous = true; recognition.interimResults = true; recognition.lang = 'en-US'
+    recognition.continuous = false; recognition.interimResults = true; recognition.lang = 'en-US'
     recognition.onresult = (event) => {
-      let current = ''
-      for (let index = event.results.length - 1; index >= 0; index -= 1) { current = event.results[index][0].transcript; if (event.results[index].isFinal) break }
-      setTranscript(current)
-      if (event.results[event.results.length - 1].isFinal) ask(current, 'voice')
+      let finalText = ''; let interimText = ''
+      for (let index = 0; index < event.results.length; index += 1) { const result = event.results[index]; if (result.isFinal) finalText += result[0].transcript; else interimText += result[0].transcript }
+      const nextText = (finalText || interimText).trim()
+      setTranscript(nextText)
+      if (finalText.trim()) { setAssistantState('thinking'); void ask(finalText, 'voice') } else setAssistantState('user-speaking')
     }
-    recognition.onend = () => { if (shouldContinueRef.current && state === 'listening') { try { recognition.start() } catch {} } }
-    recognition.onerror = () => setSupported(false)
-    recognitionRef.current = recognition; setState('listening')
-    try { recognition.start() } catch { setSupported(false) }
-  }, [ask, state])
+    recognition.onend = () => { recognitionRef.current = null; if (shouldListenRef.current && !processingRef.current && stateRef.current !== 'speaking') { setAssistantState('listening'); window.setTimeout(() => startListeningRef.current(), 250) } }
+    recognition.onerror = (event) => { if (event.error === 'not-allowed' || event.error === 'service-not-allowed') { shouldListenRef.current = false; setSupported(false); setAssistantState('ready') } }
+    recognitionRef.current = recognition; setAssistantState('listening')
+    try { recognition.start() } catch { /* Recognition may already be starting. */ }
+  }, [ask, setAssistantState])
+  startListeningRef.current = startListening
 
-  const stopListening = useCallback(() => { shouldContinueRef.current = false; recognitionRef.current?.abort(); recognitionRef.current = null; audioRef.current?.pause(); audioRef.current = null; window.speechSynthesis?.cancel(); setState('ready') }, [])
-  const toggleListening = () => { if (state === 'ready' || state === 'error') startListening(); else stopListening() }
+  const stopListening = useCallback(() => { shouldListenRef.current = false; recognitionRef.current?.abort(); recognitionRef.current = null; requestRef.current?.abort(); stopPlayback(); setAssistantState('ready') }, [setAssistantState, stopPlayback])
+  const toggleListening = () => { if (state === 'speaking' || state === 'thinking' || state === 'user-speaking') { stopListening(); return } if (state === 'listening') stopListening(); else startListening() }
   const submit = (event: FormEvent) => { event.preventDefault(); void ask(input, 'text') }
   useEffect(() => () => stopListening(), [stopListening])
 
-  const statusLabel = state === 'ready' ? 'READY' : state.toUpperCase()
+  const statusLabel = state === 'ready' ? 'READY' : state === 'user-speaking' ? 'USER SPEAKING' : state.toUpperCase()
   const helperLabel = supported ? (state === 'ready' ? 'VOICE MODE' : 'TAP TO INTERRUPT') : 'TYPE MODE'
 
-  return <main className="shagnex-shell"><div className="atmosphere atmosphere--one" /><div className="atmosphere atmosphere--two" /><div className="grid-floor" /><header className="brand-mark" aria-label="SHAGNEX assistant"><span className="brand-glyph">S</span><span className="brand-name">SHAGNEX</span></header><div className="signal-readout" aria-hidden="true"><span>SYS // 07</span><span className="signal-dot" /><span>NEURAL LINK</span></div><section className="assistant-console" aria-labelledby="assistant-title"><p className="eyebrow">PERSONAL INTELLIGENCE</p><h1 id="assistant-title" className="sr-only">SHAGNEX voice assistant</h1><Face state={state} /><div className="status-block" aria-live="polite"><p className="status-label">{statusLabel}<span className="status-pulse" /></p><p className="transcript">{transcript || (state === 'thinking' ? 'Thinking…' : 'Your signal is clear.')}</p></div><button className={`voice-control voice-control--${state}`} type="button" onClick={toggleListening} aria-pressed={state === 'listening'} aria-label={state === 'listening' ? 'Stop listening' : 'Start voice mode'}><span className="control-ring" /><span className="control-icon" /></button><p className="helper-label">{helperLabel}</p></section><section className="chat-panel" aria-label="Conversation"><div className="chat-history" aria-live="polite">{messages.length === 0 && <p className="chat-empty">Ask anything to begin a secure conversation.</p>}{messages.map((message) => <div className={`chat-message chat-message--${message.role}`} key={message.id}><span className="chat-role">{message.role === 'assistant' ? 'SHAGNEX' : 'YOU'}</span><p>{message.content}</p></div>)}</div><form className="chat-form" onSubmit={submit}><input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Type a question…" aria-label="Type a question" disabled={state === 'thinking'} /><button type="submit" disabled={!input.trim() || state === 'thinking'}>SEND</button></form></section><footer className="footer-line"><span>© 2024 SHAGNEX SYSTEMS</span><span className="footer-center">DESIGNED FOR THE IN-BETWEEN</span><span>V.1.0.7</span></footer></main>
+  return <main className="shagnex-shell"><div className="atmosphere atmosphere--one" /><div className="atmosphere atmosphere--two" /><div className="grid-floor" /><header className="brand-mark" aria-label="SHAGNEX assistant"><span className="brand-glyph">S</span><span className="brand-name">SHAGNEX</span></header><div className="signal-readout" aria-hidden="true"><span>SYS // 07</span><span className="signal-dot" /><span>NEURAL LINK</span></div><section className="assistant-console" aria-labelledby="assistant-title"><p className="eyebrow">PERSONAL INTELLIGENCE</p><h1 id="assistant-title" className="sr-only">SHAGNEX voice assistant</h1><Face state={state} /><div className="status-block" aria-live="polite"><p className="status-label">{statusLabel}<span className="status-pulse" /></p><p className="transcript">{transcript || (state === 'thinking' ? 'Thinking…' : 'Your signal is clear.')}</p></div><button className={`voice-control voice-control--${state}`} type="button" onClick={toggleListening} aria-pressed={state === 'listening'} aria-label={state === 'listening' ? 'Stop listening' : 'Start voice mode'}><span className="control-ring" /><span className="control-icon" /></button><p className="helper-label">{helperLabel}</p></section><section className="chat-panel" aria-label="Conversation"><div className="chat-history" aria-live="polite">{messages.length === 0 && <p className="chat-empty">Ask anything to begin a secure conversation.</p>}{messages.map((message) => <div className={`chat-message chat-message--${message.role}`} key={message.id}><span className="chat-role">{message.role === 'assistant' ? 'SHAGNEX' : 'YOU'}</span><p>{message.content}</p></div>)}</div><form className="chat-form" onSubmit={submit}><input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Type a question…" aria-label="Type a question" disabled={state === 'thinking'} /><button type="submit" disabled={!input.trim() || state === 'thinking'}>SEND</button></form></section><footer className="system-footer"><span>ENCRYPTED SESSION</span><span>LOCAL AUDIO LINK</span><span>BUILD 2.4.1</span></footer></main>
 }
