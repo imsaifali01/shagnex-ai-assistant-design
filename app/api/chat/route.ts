@@ -15,9 +15,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Please enter a question.' }, { status: 400 })
     }
 
-    const apiKey = process.env.OPENAI_API_KEY
+    const apiKey = process.env.OPENAI_API_KEY?.trim()
     if (!apiKey) {
-      return NextResponse.json({ success: false, error: 'The assistant is temporarily unavailable.' }, { status: 503 })
+      return NextResponse.json({ success: false, error: 'OpenAI is not configured for this preview.' }, { status: 503 })
     }
 
     const safeConversation: ConversationMessage[] = conversation
@@ -44,7 +44,14 @@ export async function POST(request: Request) {
     })
 
     if (!response.ok) {
-      return NextResponse.json({ success: false, error: 'Unable to get a response right now.' }, { status: 502 })
+      const upstream = await response.json().catch(() => null)
+      const upstreamMessage = typeof upstream?.error?.message === 'string' ? upstream.error.message : ''
+      const error = response.status === 401
+        ? 'OpenAI rejected the API key. Check that it is active and copied without extra spaces.'
+        : response.status === 429
+          ? 'OpenAI rate limit or billing limit reached.'
+          : upstreamMessage || 'OpenAI could not answer right now.'
+      return NextResponse.json({ success: false, error }, { status: response.status === 401 ? 502 : 502 })
     }
 
     const data = await response.json()
