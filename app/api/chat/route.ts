@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { NextResponse } from 'next/server'
+import { getCurrentDateTime } from '@/lib/current-date-time'
 
 type ConversationMessage = { role: 'user' | 'assistant'; content: string }
 type GeminiHistoryMessage = { role: 'user' | 'model'; parts: Array<{ text: string }> }
@@ -57,6 +58,8 @@ export async function POST(request: Request) {
 
     console.log('[SHAGNEX] Chat request started')
     const client = new GoogleGenerativeAI(apiKey)
+    const asksCurrentDateTime = /\b(today|date|day|year|time|clock|timezone|utc|what time|what day|what year|current)\b|\b(aaj|abhi|kitne baje|kaun sa din|konsa saal)\b/i.test(message)
+    const currentDateTime = asksCurrentDateTime ? getCurrentDateTime() : null
     let searchContext = ''
     const serpApiKey = process.env.SERPAPI_API_KEY
     const shouldSearch = /\b(latest|today|current|recent|news|weather|price|prices|gold|silver|oil|stock|stocks|research|search|look up|who is|what is happening|how much)\b/i.test(message)
@@ -93,7 +96,23 @@ export async function POST(request: Request) {
       }
     }
 
-    const systemInstruction = `You are SHAGNEX, a fast personal AI assistant. Answer naturally and concisely for spoken conversation. For normal questions, use 1–4 short sentences. Do not repeat the question, add long introductions, or reveal providers, APIs, keys, or implementation details. Preserve context across follow-ups. Give more detail only when requested. If current facts are uncertain, say so rather than inventing them.${searchContext ? `\n\nUse this web search context for current factual questions. Prefer it over memory and mention sources naturally when useful:\n${searchContext}` : ''}`
+    const systemInstruction = `You are SHAGNEX, a fast personal AI assistant. Answer naturally and concisely for spoken conversation. For normal questions, use 1–4 short sentences. Do not repeat the question, add long introductions, or reveal providers, APIs, keys, or implementation details. Preserve context across follow-ups. Give more detail only when requested. If current facts are uncertain, say so rather than inventing them.\n\nNever answer a current date, day, year, time, timezone, or UTC offset question from model knowledge. Never guess, infer, use cached values, conversation timestamps, deployment timestamps, or hardcoded dates. Always use the server-provided getCurrentDateTime result first. If it is unavailable, say the current date/time could not be verified.${currentDateTime ? `\n\nAuthoritative getCurrentDateTime result (Asia/Kolkata): ${JSON.stringify(currentDateTime)}` : ''}${searchContext ? `\n\nUse this web search context for current factual questions. Prefer it over memory and mention sources naturally when useful:\n${searchContext}` : ''}`
+
+    if (currentDateTime) {
+      const asksTime = /\b(time|clock|baje|abhi)\b/i.test(message)
+      const asksDate = /\b(date|today|day|aaj|din)\b/i.test(message)
+      const asksYear = /\b(year|saal)\b/i.test(message)
+      const dateAnswer = asksTime && asksDate
+        ? `It is ${currentDateTime.time} on ${currentDateTime.day}, ${currentDateTime.date}, in ${currentDateTime.timezone}.`
+        : asksTime
+          ? `It is ${currentDateTime.time} in ${currentDateTime.timezone}.`
+          : asksYear
+            ? `The current year is ${currentDateTime.year}.`
+            : asksDate
+              ? `Today is ${currentDateTime.day}, ${currentDateTime.date}.`
+              : `The current date and time are ${currentDateTime.day}, ${currentDateTime.date} at ${currentDateTime.time} in ${currentDateTime.timezone}.`
+      return NextResponse.json({ success: true, message: dateAnswer, currentDateTime })
+    }
     const models = [...new Set([process.env.GEMINI_MODEL, process.env.GEMINI_MODEL_2, 'gemini-2.5-flash', 'gemini-2.0-flash'].filter((model): model is string => Boolean(model)))]
     let answer = ''
     let lastError: unknown
