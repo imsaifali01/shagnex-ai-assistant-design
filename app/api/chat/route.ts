@@ -29,7 +29,29 @@ export async function POST(request: Request) {
       .map((item: ConversationMessage) => ({ role: item.role, content: item.content.slice(0, 4000) }))
 
     const client = new GoogleGenerativeAI(apiKey)
-    const systemInstruction = 'You are SHAGNEX, a concise, warm personal AI assistant. Answer clearly and naturally for both text and spoken audio. Preserve context across follow-up questions. Never mention internal providers, APIs, keys, or implementation details. If you are unsure about current facts, say so rather than inventing them.'
+    let searchContext = ''
+    const tavilyKey = process.env.TAVILY_API_KEY
+    const shouldSearch = /\b(latest|today|current|recent|news|weather|price|prices|stock|research|search|look up|who is|what is happening|how much)\b/i.test(message)
+
+    if (tavilyKey && shouldSearch) {
+      try {
+        const searchResponse = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: tavilyKey, query: message, search_depth: 'basic', topic: 'general', max_results: 5, include_answer: true }),
+          signal: AbortSignal.timeout(8000),
+        })
+        if (searchResponse.ok) {
+          const searchData = await searchResponse.json() as { answer?: string; results?: Array<{ title?: string; content?: string; url?: string }> }
+          const results = (searchData.results ?? []).map((result) => `- ${result.title ?? 'Source'}: ${result.content ?? ''} (${result.url ?? ''})`).join('\n')
+          searchContext = [searchData.answer ? `Tavily summary: ${searchData.answer}` : '', results ? `Web sources:\n${results}` : ''].filter(Boolean).join('\n\n')
+        }
+      } catch (error) {
+        console.error('[v0] Tavily search unavailable:', error)
+      }
+    }
+
+    const systemInstruction = `You are SHAGNEX, a concise, warm personal AI assistant. Answer clearly and naturally for both text and spoken audio. Preserve context across follow-up questions. Never mention internal providers, APIs, keys, or implementation details. If you are unsure about current facts, say so rather than inventing them.${searchContext ? `\n\nUse the following web search context for current factual questions. Prefer it over memory, do not invent details, and mention the source naturally when useful:\n${searchContext}` : ''}`
     const models = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-2.0-flash'].filter((model): model is string => Boolean(model)))]
     let answer = ''
     let lastError: unknown
