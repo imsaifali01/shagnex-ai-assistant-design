@@ -66,6 +66,20 @@ button { font: inherit; }
 .voice-control--speaking .control-icon, .voice-control--thinking .control-icon { animation: micPulse .8s ease-in-out infinite alternate; }
 .helper-label { margin: 21px 0 0; color: #46656d; font-size: 9px; letter-spacing: .35em; }
 .footer-line { bottom: 31px; left: 42px; right: 42px; justify-content: space-between; font-size: 8px; color: #40565b; letter-spacing: .21em; } .footer-center { color: #536e75; }
+.chat-panel { position: relative; z-index: 3; width: min(560px, 88vw); margin: 18px auto 72px; border: 1px solid rgba(128,236,255,.14); background: rgba(4, 17, 22, .72); backdrop-filter: blur(12px); }
+.chat-history { max-height: 150px; overflow-y: auto; padding: 12px 14px; display: grid; gap: 10px; }
+.chat-empty { margin: 0; color: #557078; font-size: 11px; letter-spacing: .08em; text-align: center; }
+.chat-message { padding: 8px 10px; border-left: 1px solid rgba(128,236,255,.35); background: rgba(128,236,255,.035); }
+.chat-message--user { border-left-color: rgba(255,255,255,.25); }
+.chat-role { display: block; margin-bottom: 4px; color: var(--cyan); font-size: 8px; letter-spacing: .24em; }
+.chat-message--user .chat-role { color: #8da2a6; }
+.chat-message p { margin: 0; color: #c1e0e4; font-size: 12px; line-height: 1.45; }
+.chat-form { display: flex; border-top: 1px solid rgba(128,236,255,.12); }
+.chat-form input { min-width: 0; flex: 1; border: 0; outline: 0; padding: 12px 14px; background: transparent; color: #e9fbff; font: inherit; font-size: 12px; }
+.chat-form input::placeholder { color: #557078; }
+.chat-form button { border: 0; border-left: 1px solid rgba(128,236,255,.14); padding: 0 16px; background: rgba(128,236,255,.08); color: var(--cyan); cursor: pointer; font-size: 9px; letter-spacing: .18em; }
+.chat-form button:disabled { cursor: not-allowed; opacity: .35; }
+.voice-control--error { border-color: #d59b9b; color: #ffc3c3; }
 
 @keyframes breathing { 50% { opacity: .2; transform: scale(1.1); } } @keyframes headFloat { 50% { transform: translateY(-5px); } } @keyframes orbit { to { transform: rotate(344deg); } } @keyframes orbitReverse { to { transform: rotate(-342deg); } } @keyframes scan { to { transform: translateY(20px); } } @keyframes pulse { 50% { opacity: .35; transform: scale(.7); } } @keyframes eyePulse { 50% { transform: scaleX(.78); } } @keyframes controlRing { 50% { transform: scale(1.08); opacity: .4; } } @keyframes micPulse { to { transform: scale(1.15); opacity: .7; } } @keyframes drift { 50% { transform: translate(8px, -13px); opacity: .35; } }
 .face-stage--listening .face-glow { opacity: .3; } .face-stage--listening .eye span { box-shadow: 0 0 20px 5px rgba(101,228,255,1); } .face-stage--thinking .orbit--inner { animation-duration: 3s; } .face-stage--speaking .mouth { animation: mouthTalk .3s ease-in-out infinite alternate; } @keyframes mouthTalk { to { height: 15%; border-radius: 50%; } }
