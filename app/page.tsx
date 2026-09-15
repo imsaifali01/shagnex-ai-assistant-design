@@ -69,21 +69,38 @@ export default function Page() {
   const shouldContinueRef = useRef(false)
   const responseIndexRef = useRef(0)
 
-  const speak = useCallback((text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      setState('ready')
-      return
-    }
+  const speak = useCallback(async (text: string) => {
     setState('speaking')
-    window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 0.96
-    utterance.pitch = 1.04
-    utterance.onend = () => {
-      if (shouldContinueRef.current) setState('listening')
-      else setState('ready')
+    try {
+      const response = await fetch('/api/voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+      if (!response.ok) throw new Error('Voice generation failed')
+      const audio = new Audio(URL.createObjectURL(await response.blob()))
+      audio.onended = () => {
+        URL.revokeObjectURL(audio.src)
+        if (shouldContinueRef.current) setState('listening')
+        else setState('ready')
+      }
+      audio.onerror = () => {
+        URL.revokeObjectURL(audio.src)
+        setState('ready')
+      }
+      await audio.play()
+    } catch {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel()
+        const utterance = new SpeechSynthesisUtterance(text)
+        utterance.rate = 0.96
+        utterance.pitch = 1.04
+        utterance.onend = () => setState(shouldContinueRef.current ? 'listening' : 'ready')
+        window.speechSynthesis.speak(utterance)
+      } else {
+        setState('ready')
+      }
     }
-    window.speechSynthesis.speak(utterance)
   }, [])
 
   const startListening = useCallback(() => {
