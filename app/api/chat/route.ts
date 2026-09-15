@@ -58,31 +58,38 @@ export async function POST(request: Request) {
     console.log('[SHAGNEX] Chat request started')
     const client = new GoogleGenerativeAI(apiKey)
     let searchContext = ''
-    const tavilyKey = process.env.TAVILY_API_KEY
+    const serpApiKey = process.env.SERPAPI_API_KEY
     const shouldSearch = /\b(latest|today|current|recent|news|weather|price|prices|gold|silver|oil|stock|stocks|research|search|look up|who is|what is happening|how much)\b/i.test(message)
     const searchQuery = /\b(gold|xau|bullion)\b/i.test(message)
-      ? `${message}. Return the latest live gold spot price in USD per troy ounce, with timestamp and source.`
+      ? `${message} latest live gold spot price USD per troy ounce`
       : message
 
-    if (tavilyKey && shouldSearch) {
+    if (serpApiKey && shouldSearch) {
       try {
-        console.log('[SHAGNEX] Searching Tavily:', searchQuery)
-        const searchResponse = await fetch('https://api.tavily.com/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: tavilyKey, query: searchQuery, search_depth: 'advanced', topic: 'general', max_results: 5, include_answer: true, include_raw_content: true }),
-          signal: AbortSignal.timeout(8000),
-        })
+        console.log('[SHAGNEX] Searching SerpAPI:', searchQuery)
+        const searchUrl = new URL('https://serpapi.com/search.json')
+        searchUrl.searchParams.set('engine', 'google')
+        searchUrl.searchParams.set('q', searchQuery)
+        searchUrl.searchParams.set('api_key', serpApiKey)
+        searchUrl.searchParams.set('num', '5')
+        const searchResponse = await fetch(searchUrl, { signal: AbortSignal.timeout(8000) })
         if (searchResponse.ok) {
-          const searchData = await searchResponse.json() as { answer?: string; results?: Array<{ title?: string; content?: string; url?: string }> }
-          const results = (searchData.results ?? []).map((result) => `- ${result.title ?? 'Source'}: ${result.content ?? ''} (${result.url ?? ''})`).join('\n')
-          searchContext = [searchData.answer ? `Tavily summary: ${searchData.answer}` : '', results ? `Web sources:\n${results}` : ''].filter(Boolean).join('\n\n')
-          console.log('[SHAGNEX] Tavily search returned:', Boolean(searchContext))
+          const searchData = await searchResponse.json() as { answer_box?: { answer?: string; snippet?: string; title?: string; link?: string }; knowledge_graph?: { title?: string; description?: string; source?: { name?: string; link?: string } }; organic_results?: Array<{ title?: string; snippet?: string; link?: string }> }
+          const answerBox = searchData.answer_box
+          const knowledgeGraph = searchData.knowledge_graph
+          const results = (searchData.organic_results ?? []).map((result) => `- ${result.title ?? 'Source'}: ${result.snippet ?? ''} (${result.link ?? ''})`).join('\n')
+          searchContext = [
+            answerBox ? `Direct result: ${answerBox.answer ?? answerBox.snippet ?? ''} (${answerBox.link ?? ''})` : '',
+            knowledgeGraph ? `Knowledge result: ${knowledgeGraph.title ?? ''} — ${knowledgeGraph.description ?? ''} (${knowledgeGraph.source?.link ?? ''})` : '',
+            results ? `Web sources:\n${results}` : '',
+          ].filter(Boolean).join('\n\n')
+          if (!searchContext) searchContext = `SerpAPI returned no usable results for: ${searchQuery}`
+          console.log('[SHAGNEX] SerpAPI search returned:', Boolean(searchContext))
         } else {
-          console.error('[SHAGNEX] Tavily search failed:', searchResponse.status)
+          console.error('[SHAGNEX] SerpAPI search failed:', searchResponse.status)
         }
       } catch (error) {
-        console.error('[v0] Tavily search unavailable:', error)
+        console.error('[v0] SerpAPI search unavailable:', error)
       }
     }
 
