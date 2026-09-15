@@ -2,6 +2,28 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import { NextResponse } from 'next/server'
 
 type ConversationMessage = { role: 'user' | 'assistant'; content: string }
+type GeminiHistoryMessage = { role: 'user' | 'model'; parts: Array<{ text: string }> }
+
+function buildGeminiHistory(messages: ConversationMessage[]): GeminiHistoryMessage[] {
+  const normalized = messages
+    .filter((item) => item.content.trim())
+    .map((item) => ({
+      role: item.role === 'assistant' ? 'model' as const : 'user' as const,
+      parts: [{ text: item.content.trim() }],
+    }))
+
+  while (normalized.length > 0 && normalized[0].role !== 'user') {
+    normalized.shift()
+  }
+
+  const alternating: GeminiHistoryMessage[] = []
+  for (const item of normalized) {
+    if (alternating.at(-1)?.role === item.role) continue
+    alternating.push(item)
+  }
+
+  return alternating
+}
 
 export async function POST(request: Request) {
   try {
@@ -27,6 +49,11 @@ export async function POST(request: Request) {
       })
       .slice(-12)
       .map((item: ConversationMessage) => ({ role: item.role, content: item.content.slice(0, 4000) }))
+
+    const previousMessages = history.at(-1)?.role === 'user' && history.at(-1)?.content.trim() === message
+      ? history.slice(0, -1)
+      : history
+    const geminiHistory = buildGeminiHistory(previousMessages)
 
     const client = new GoogleGenerativeAI(apiKey)
     let searchContext = ''
@@ -60,7 +87,7 @@ export async function POST(request: Request) {
       try {
         const model = client.getGenerativeModel({ model: modelName, systemInstruction })
         const chat = model.startChat({
-          history: history.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
+          history: geminiHistory,
           generationConfig: { temperature: 0.7, maxOutputTokens: 1200 },
         })
         answer = (await chat.sendMessage(message)).response.text().trim()
