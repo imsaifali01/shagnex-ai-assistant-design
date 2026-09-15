@@ -86,7 +86,9 @@ export default function Page() {
     const controller = new AbortController()
     requestRef.current = controller
     try {
+      const timeout = window.setTimeout(() => controller.abort(), 30000)
       const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ message: clean, conversation: conversationRef.current.map(({ role, content }) => ({ role, content })) }) })
+      window.clearTimeout(timeout)
       const data = await response.json() as { success?: boolean; message?: string; error?: string }
       if (!response.ok || !data.success || !data.message) throw new Error(data.error || "Sorry, I couldn't process that right now.")
       const assistantMessage: Message = { id: crypto.randomUUID(), role: 'assistant', content: data.message, timestamp: Date.now(), source: 'voice' }
