@@ -80,7 +80,7 @@ export async function POST(request: Request) {
     }
 
     const systemInstruction = `You are SHAGNEX, a fast personal AI assistant. Answer naturally and concisely for spoken conversation. For normal questions, use 1–4 short sentences. Do not repeat the question, add long introductions, or reveal providers, APIs, keys, or implementation details. Preserve context across follow-ups. Give more detail only when requested. If current facts are uncertain, say so rather than inventing them.${searchContext ? `\n\nUse this web search context for current factual questions. Prefer it over memory and mention sources naturally when useful:\n${searchContext}` : ''}`
-    const models = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-2.0-flash'].filter((model): model is string => Boolean(model)))]
+    const models = [...new Set([process.env.GEMINI_MODEL, process.env.GEMINI_MODEL_2, 'gemini-2.5-flash', 'gemini-2.0-flash'].filter((model): model is string => Boolean(model)))]
     let answer = ''
     let lastError: unknown
 
