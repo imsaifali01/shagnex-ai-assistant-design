@@ -18,25 +18,36 @@ function Face({ state }: { state: AssistantState }) {
 
 export default function Page() {
   const [state, setState] = useState<AssistantState>('ready')
+  const [continuousVoiceMode, setContinuousVoiceMode] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
   const [supported, setSupported] = useState(true)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
-  const shouldListenRef = useRef(false)
+  const continuousVoiceModeRef = useRef(false)
+  const isListeningRef = useRef(false)
+  const isProcessingRef = useRef(false)
+  const isSpeakingRef = useRef(false)
   const stateRef = useRef<AssistantState>('ready')
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null)
   const conversationRef = useRef<Message[]>([])
   const requestRef = useRef<AbortController | null>(null)
   const speakingIdRef = useRef(0)
-  const processingRef = useRef(false)
+  const restartTimerRef = useRef<number | null>(null)
   const startListeningRef = useRef<() => void>(() => {})
 
   const setAssistantState = useCallback((next: AssistantState) => { stateRef.current = next; setState(next) }, [])
 
+  useEffect(() => { continuousVoiceModeRef.current = continuousVoiceMode }, [continuousVoiceMode])
+
+  const clearRestartTimer = useCallback(() => {
+    if (restartTimerRef.current !== null) { window.clearTimeout(restartTimerRef.current); restartTimerRef.current = null }
+  }, [])
+
   const stopPlayback = useCallback(() => {
     speakingIdRef.current += 1
+    isSpeakingRef.current = false
     audioRef.current?.pause()
     audioRef.current = null
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
@@ -44,13 +55,16 @@ export default function Page() {
   }, [])
 
   const finishSpeaking = useCallback(() => {
-    if (shouldListenRef.current) { setAssistantState('listening'); startListeningRef.current() } else setAssistantState('ready')
+    isSpeakingRef.current = false
+    if (continuousVoiceModeRef.current) { setAssistantState('listening'); startListeningRef.current() } else setAssistantState('ready')
   }, [setAssistantState])
 
   const speak = useCallback(async (text: string) => {
     stopPlayback()
-    shouldListenRef.current = false
+    clearRestartTimer()
+    isSpeakingRef.current = true
     recognitionRef.current?.abort()
+    isListeningRef.current = false
     const speakingId = speakingIdRef.current
     setAssistantState('speaking')
     try {
@@ -73,13 +87,15 @@ export default function Page() {
         window.speechSynthesis.speak(utterance)
       } else finishSpeaking()
     }
-  }, [finishSpeaking, setAssistantState, stopPlayback])
+  }, [clearRestartTimer, finishSpeaking, setAssistantState, stopPlayback])
 
   const ask = useCallback(async (text: string, source: 'text' | 'voice') => {
     const clean = text.trim()
-    if (!clean || processingRef.current) return
+    if (!clean || isProcessingRef.current) return
+    clearRestartTimer()
     recognitionRef.current?.abort()
-    processingRef.current = true
+    isListeningRef.current = false
+    isProcessingRef.current = true
     const userMessage: Message = { id: crypto.randomUUID(), role: 'user', content: clean, timestamp: Date.now(), source }
     conversationRef.current = [...conversationRef.current, userMessage]
     setMessages((current) => [...current, userMessage])
@@ -97,21 +113,19 @@ export default function Page() {
         conversationRef.current = [...conversationRef.current, assistantMessage]
         setMessages((current) => [...current, assistantMessage])
         await speak(data.message)
-      } finally {
-        window.clearTimeout(timeout)
-      }
+      } finally { window.clearTimeout(timeout) }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: error instanceof Error ? error.message : 'Sorry, I couldn\'t process that right now.', timestamp: Date.now(), source: 'text' }])
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: error instanceof Error ? error.message : "Sorry, I couldn't process that right now.", timestamp: Date.now(), source: 'text' }])
       setAssistantState('error')
-    } finally { processingRef.current = false; requestRef.current = null }
-  }, [setAssistantState, speak])
+    } finally { isProcessingRef.current = false; requestRef.current = null }
+  }, [clearRestartTimer, setAssistantState, speak])
 
   const startListening = useCallback(() => {
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition
-    if (!Recognition || processingRef.current || stateRef.current === 'speaking') { if (!Recognition) setSupported(false); return }
-    shouldListenRef.current = true
-    if (recognitionRef.current) return
+    if (!Recognition) { setSupported(false); setAssistantState('ready'); return }
+    if (!continuousVoiceModeRef.current || isProcessingRef.current || isSpeakingRef.current || isListeningRef.current) return
+    clearRestartTimer()
     const recognition = new Recognition()
     recognition.continuous = false; recognition.interimResults = true; recognition.lang = 'en-US'
     recognition.onresult = (event) => {
@@ -125,7 +139,7 @@ export default function Page() {
       if (interimText.trim()) { setTranscript(interimText.trim()); setAssistantState('user-speaking') }
       if (finalText.trim()) {
         const text = finalText.trim()
-        console.log('[SHAGNEX] Speech final:', text)
+        isListeningRef.current = false
         recognition.stop()
         setTranscript(text)
         void ask(text, 'voice')
@@ -133,27 +147,55 @@ export default function Page() {
     }
     recognition.onend = () => {
       if (recognitionRef.current === recognition) recognitionRef.current = null
-      if (shouldListenRef.current && !processingRef.current && stateRef.current !== 'speaking') {
+      isListeningRef.current = false
+      if (continuousVoiceModeRef.current && !isProcessingRef.current && !isSpeakingRef.current) {
         setAssistantState('listening')
-        window.setTimeout(() => startListeningRef.current(), 250)
+        restartTimerRef.current = window.setTimeout(() => startListeningRef.current(), 150)
       }
     }
     recognition.onerror = (event) => {
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') { shouldListenRef.current = false; setSupported(false); setAssistantState('ready') }
+      isListeningRef.current = false
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        continuousVoiceModeRef.current = false; setContinuousVoiceMode(false); setSupported(false); setAssistantState('ready'); return
+      }
+      if (continuousVoiceModeRef.current && !isProcessingRef.current && !isSpeakingRef.current) {
+        restartTimerRef.current = window.setTimeout(() => startListeningRef.current(), 300)
+      }
     }
     recognitionRef.current = recognition
+    isListeningRef.current = true
     setAssistantState('listening')
-    try { recognition.start() } catch { recognitionRef.current = null }
-  }, [ask, setAssistantState])
+    try { recognition.start() } catch { isListeningRef.current = false; recognitionRef.current = null }
+  }, [ask, clearRestartTimer, setAssistantState])
   startListeningRef.current = startListening
 
-  const stopListening = useCallback(() => { shouldListenRef.current = false; recognitionRef.current?.abort(); recognitionRef.current = null; requestRef.current?.abort(); stopPlayback(); setAssistantState('ready') }, [setAssistantState, stopPlayback])
-  const toggleListening = () => { if (state === 'speaking' || state === 'thinking' || state === 'user-speaking') { stopListening(); return } if (state === 'listening') stopListening(); else startListening() }
+  const stopListening = useCallback(() => {
+    continuousVoiceModeRef.current = false
+    setContinuousVoiceMode(false)
+    clearRestartTimer()
+    recognitionRef.current?.abort()
+    recognitionRef.current = null
+    isListeningRef.current = false
+    requestRef.current?.abort()
+    stopPlayback()
+    setAssistantState('ready')
+  }, [clearRestartTimer, setAssistantState, stopPlayback])
+
+  const toggleListening = () => {
+    if (continuousVoiceModeRef.current) { stopListening(); return }
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition
+    if (!Recognition) { setSupported(false); return }
+    setContinuousVoiceMode(true)
+    continuousVoiceModeRef.current = true
+    setAssistantState('listening')
+    startListeningRef.current()
+  }
   const submit = (event: FormEvent) => { event.preventDefault(); void ask(input, 'text') }
   useEffect(() => () => stopListening(), [stopListening])
+
 
   const statusLabel = state === 'ready' ? 'READY' : state === 'user-speaking' ? 'USER SPEAKING' : state.toUpperCase()
   const helperLabel = supported ? (state === 'ready' ? 'VOICE MODE' : 'TAP TO INTERRUPT') : 'TYPE MODE'
 
-  return <main className="shagnex-shell"><div className="atmosphere atmosphere--one" /><div className="atmosphere atmosphere--two" /><div className="grid-floor" /><header className="brand-mark" aria-label="SHAGNEX assistant"><span className="brand-glyph">S</span><span className="brand-name">SHAGNEX</span></header><div className="signal-readout" aria-hidden="true"><span>SYS // 07</span><span className="signal-dot" /><span>NEURAL LINK</span></div><section className="assistant-console" aria-labelledby="assistant-title"><p className="eyebrow">PERSONAL INTELLIGENCE</p><h1 id="assistant-title" className="sr-only">SHAGNEX voice assistant</h1><Face state={state} /><div className="status-block" aria-live="polite"><p className="status-label">{statusLabel}<span className="status-pulse" /></p><p className="transcript">{transcript || (state === 'thinking' ? 'Thinking…' : 'Your signal is clear.')}</p></div><button className={`voice-control voice-control--${state}`} type="button" onClick={toggleListening} aria-pressed={state === 'listening'} aria-label={state === 'listening' ? 'Stop listening' : 'Start voice mode'}><span className="control-ring" /><span className="control-icon" /></button><p className="helper-label">{helperLabel}</p></section><section className="chat-panel" aria-label="Conversation"><div className="chat-history" aria-live="polite">{messages.length === 0 && <p className="chat-empty">Ask anything to begin a secure conversation.</p>}{messages.map((message) => <div className={`chat-message chat-message--${message.role}`} key={message.id}><span className="chat-role">{message.role === 'assistant' ? 'SHAGNEX' : 'YOU'}</span><p>{message.content}</p></div>)}</div><form className="chat-form" onSubmit={submit}><input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Type a question…" aria-label="Type a question" disabled={state === 'thinking'} /><button type="submit" disabled={!input.trim() || state === 'thinking'}>SEND</button></form></section><footer className="system-footer"><span>ENCRYPTED SESSION</span><span>LOCAL AUDIO LINK</span><span>BUILD 2.4.1</span></footer></main>
+  return <main className="shagnex-shell"><div className="atmosphere atmosphere--one" /><div className="atmosphere atmosphere--two" /><div className="grid-floor" /><header className="brand-mark" aria-label="SHAGNEX assistant"><span className="brand-glyph">S</span><span className="brand-name">SHAGNEX</span></header><div className="signal-readout" aria-hidden="true"><span>SYS // 07</span><span className="signal-dot" /><span>NEURAL LINK</span></div><section className="assistant-console" aria-labelledby="assistant-title"><p className="eyebrow">PERSONAL INTELLIGENCE</p><h1 id="assistant-title" className="sr-only">SHAGNEX voice assistant</h1><Face state={state} /><div className="status-block" aria-live="polite"><p className="status-label">{statusLabel}<span className="status-pulse" /></p><p className="transcript">{transcript || (state === 'thinking' ? 'Thinking…' : 'Your signal is clear.')}</p></div><button className={`voice-control voice-control--${state}`} type="button" onClick={toggleListening} aria-pressed={continuousVoiceMode} aria-label={continuousVoiceMode ? 'Stop voice mode' : 'Start voice mode'}><span className="control-ring" /><span className="control-icon" /></button><p className="helper-label">{helperLabel}</p></section><section className="chat-panel" aria-label="Conversation"><div className="chat-history" aria-live="polite">{messages.length === 0 && <p className="chat-empty">Ask anything to begin a secure conversation.</p>}{messages.map((message) => <div className={`chat-message chat-message--${message.role}`} key={message.id}><span className="chat-role">{message.role === 'assistant' ? 'SHAGNEX' : 'YOU'}</span><p>{message.content}</p></div>)}</div><form className="chat-form" onSubmit={submit}><input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Type a question…" aria-label="Type a question" disabled={state === 'thinking'} /><button type="submit" disabled={!input.trim() || state === 'thinking'}>SEND</button></form></section><footer className="system-footer"><span>ENCRYPTED SESSION</span><span>LOCAL AUDIO LINK</span><span>BUILD 2.4.1</span></footer></main>
 }
