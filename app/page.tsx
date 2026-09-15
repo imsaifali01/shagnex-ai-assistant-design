@@ -8,7 +8,7 @@ type Message = { id: string; role: 'user' | 'assistant'; content: string; timest
 declare global {
   interface Window { webkitSpeechRecognition?: new () => SpeechRecognition; SpeechRecognition?: new () => SpeechRecognition }
   interface SpeechRecognition extends EventTarget { continuous: boolean; interimResults: boolean; lang: string; start: () => void; stop: () => void; abort: () => void; onresult: ((event: SpeechRecognitionEvent) => void) | null; onend: (() => void) | null; onerror: ((event: SpeechRecognitionErrorEvent) => void) | null }
-  interface SpeechRecognitionEvent extends Event { results: SpeechRecognitionResultList }
+  interface SpeechRecognitionEvent extends Event { resultIndex: number; results: SpeechRecognitionResultList }
   interface SpeechRecognitionErrorEvent extends Event { error: string }
 }
 
@@ -49,6 +49,8 @@ export default function Page() {
 
   const speak = useCallback(async (text: string) => {
     stopPlayback()
+    shouldListenRef.current = false
+    recognitionRef.current?.abort()
     const speakingId = speakingIdRef.current
     setAssistantState('speaking')
     try {
@@ -87,14 +89,17 @@ export default function Page() {
     requestRef.current = controller
     try {
       const timeout = window.setTimeout(() => controller.abort(), 30000)
-      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ message: clean, conversation: conversationRef.current.map(({ role, content }) => ({ role, content })) }) })
-      window.clearTimeout(timeout)
-      const data = await response.json() as { success?: boolean; message?: string; error?: string }
-      if (!response.ok || !data.success || !data.message) throw new Error(data.error || "Sorry, I couldn't process that right now.")
-      const assistantMessage: Message = { id: crypto.randomUUID(), role: 'assistant', content: data.message, timestamp: Date.now(), source: 'voice' }
-      conversationRef.current = [...conversationRef.current, assistantMessage]
-      setMessages((current) => [...current, assistantMessage])
-      await speak(data.message)
+      try {
+        const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ message: clean, conversation: conversationRef.current.slice(0, -1).map(({ role, content }) => ({ role, content })) }) })
+        const data = await response.json() as { success?: boolean; message?: string; error?: string }
+        if (!response.ok || !data.success || !data.message) throw new Error(data.error || "Sorry, I couldn't process that right now.")
+        const assistantMessage: Message = { id: crypto.randomUUID(), role: 'assistant', content: data.message, timestamp: Date.now(), source: 'voice' }
+        conversationRef.current = [...conversationRef.current, assistantMessage]
+        setMessages((current) => [...current, assistantMessage])
+        await speak(data.message)
+      } finally {
+        window.clearTimeout(timeout)
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: error instanceof Error ? error.message : 'Sorry, I couldn\'t process that right now.', timestamp: Date.now(), source: 'text' }])
@@ -104,22 +109,41 @@ export default function Page() {
 
   const startListening = useCallback(() => {
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition
-    if (!Recognition) { setSupported(false); return }
+    if (!Recognition || processingRef.current || stateRef.current === 'speaking') { if (!Recognition) setSupported(false); return }
     shouldListenRef.current = true
-    recognitionRef.current?.abort()
+    if (recognitionRef.current) return
     const recognition = new Recognition()
     recognition.continuous = false; recognition.interimResults = true; recognition.lang = 'en-US'
     recognition.onresult = (event) => {
-      let finalText = ''; let interimText = ''
-      for (let index = 0; index < event.results.length; index += 1) { const result = event.results[index]; if (result.isFinal) finalText += result[0].transcript; else interimText += result[0].transcript }
-      const nextText = (finalText || interimText).trim()
-      setTranscript(nextText)
-      if (finalText.trim()) { setAssistantState('thinking'); void ask(finalText, 'voice') } else setAssistantState('user-speaking')
+      let finalText = ''
+      let interimText = ''
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index]
+        if (result.isFinal) finalText += result[0].transcript
+        else interimText += result[0].transcript
+      }
+      if (interimText.trim()) { setTranscript(interimText.trim()); setAssistantState('user-speaking') }
+      if (finalText.trim()) {
+        const text = finalText.trim()
+        console.log('[SHAGNEX] Speech final:', text)
+        recognition.stop()
+        setTranscript(text)
+        void ask(text, 'voice')
+      }
     }
-    recognition.onend = () => { recognitionRef.current = null; if (shouldListenRef.current && !processingRef.current && stateRef.current !== 'speaking') { setAssistantState('listening'); window.setTimeout(() => startListeningRef.current(), 250) } }
-    recognition.onerror = (event) => { if (event.error === 'not-allowed' || event.error === 'service-not-allowed') { shouldListenRef.current = false; setSupported(false); setAssistantState('ready') } }
-    recognitionRef.current = recognition; setAssistantState('listening')
-    try { recognition.start() } catch { /* Recognition may already be starting. */ }
+    recognition.onend = () => {
+      if (recognitionRef.current === recognition) recognitionRef.current = null
+      if (shouldListenRef.current && !processingRef.current && stateRef.current !== 'speaking') {
+        setAssistantState('listening')
+        window.setTimeout(() => startListeningRef.current(), 250)
+      }
+    }
+    recognition.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') { shouldListenRef.current = false; setSupported(false); setAssistantState('ready') }
+    }
+    recognitionRef.current = recognition
+    setAssistantState('listening')
+    try { recognition.start() } catch { recognitionRef.current = null }
   }, [ask, setAssistantState])
   startListeningRef.current = startListening
 
