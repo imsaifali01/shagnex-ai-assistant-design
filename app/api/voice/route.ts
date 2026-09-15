@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 
-const ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
+const ELEVENLABS_VOICE_ID = 'HH8sIQq8WOcER3Nu118i'
 
 export async function POST(request: Request) {
   try {
