@@ -55,6 +55,7 @@ export async function POST(request: Request) {
       : history
     const geminiHistory = buildGeminiHistory(previousMessages)
 
+    console.log('[SHAGNEX] Chat request started')
     const client = new GoogleGenerativeAI(apiKey)
     let searchContext = ''
     const tavilyKey = process.env.TAVILY_API_KEY
@@ -78,7 +79,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const systemInstruction = `You are SHAGNEX, a concise, warm personal AI assistant. Answer clearly and naturally for both text and spoken audio. Preserve context across follow-up questions. Never mention internal providers, APIs, keys, or implementation details. If you are unsure about current facts, say so rather than inventing them.${searchContext ? `\n\nUse the following web search context for current factual questions. Prefer it over memory, do not invent details, and mention the source naturally when useful:\n${searchContext}` : ''}`
+    const systemInstruction = `You are SHAGNEX, a fast personal AI assistant. Answer naturally and concisely for spoken conversation. For normal questions, use 1–4 short sentences. Do not repeat the question, add long introductions, or reveal providers, APIs, keys, or implementation details. Preserve context across follow-ups. Give more detail only when requested. If current facts are uncertain, say so rather than inventing them.${searchContext ? `\n\nUse this web search context for current factual questions. Prefer it over memory and mention sources naturally when useful:\n${searchContext}` : ''}`
     const models = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-2.0-flash'].filter((model): model is string => Boolean(model)))]
     let answer = ''
     let lastError: unknown
@@ -88,9 +89,16 @@ export async function POST(request: Request) {
         const model = client.getGenerativeModel({ model: modelName, systemInstruction })
         const chat = model.startChat({
           history: geminiHistory,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 1200 },
+          generationConfig: { temperature: 0.65, maxOutputTokens: 500 },
         })
-        answer = (await chat.sendMessage(message)).response.text().trim()
+        console.time(`[SHAGNEX] Gemini ${modelName}`)
+        const result = await Promise.race([
+          chat.sendMessage(message),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Gemini request timed out')), 9000)),
+        ])
+        console.timeEnd(`[SHAGNEX] Gemini ${modelName}`)
+        console.log('[SHAGNEX] Gemini complete response received')
+        answer = result.response.text().trim()
         if (answer) break
       } catch (error) {
         lastError = error

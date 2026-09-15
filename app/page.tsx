@@ -68,14 +68,20 @@ export default function Page() {
     const speakingId = speakingIdRef.current
     setAssistantState('speaking')
     try {
-      const response = await fetch('/api/voice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
+      console.log('[SHAGNEX] Voice request started')
+      const voiceController = new AbortController()
+      const voiceTimeout = window.setTimeout(() => voiceController.abort(), 12000)
+      const response = await fetch('/api/voice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: voiceController.signal, body: JSON.stringify({ text }) })
+      window.clearTimeout(voiceTimeout)
       if (!response.ok) throw new Error('voice')
       const url = URL.createObjectURL(await response.blob())
+      console.log('[SHAGNEX] Audio received')
       const audio = new Audio(url)
       audioRef.current = audio
-      audio.onended = () => { URL.revokeObjectURL(url); if (speakingId === speakingIdRef.current) finishSpeaking() }
+      audio.onended = () => { console.log('[SHAGNEX] Audio playback ended'); URL.revokeObjectURL(url); if (speakingId === speakingIdRef.current) finishSpeaking() }
       audio.onerror = () => { URL.revokeObjectURL(url); if (speakingId === speakingIdRef.current) finishSpeaking() }
       await audio.play()
+      console.log('[SHAGNEX] Audio playback started')
     } catch {
       if (speakingId !== speakingIdRef.current) return
       if ('speechSynthesis' in window) {
@@ -99,6 +105,7 @@ export default function Page() {
     const userMessage: Message = { id: crypto.randomUUID(), role: 'user', content: clean, timestamp: Date.now(), source }
     conversationRef.current = [...conversationRef.current, userMessage]
     setMessages((current) => [...current, userMessage])
+    console.log('[SHAGNEX] Speech final received:', clean)
     setTranscript(clean); setInput(''); setAssistantState('thinking')
     requestRef.current?.abort()
     const controller = new AbortController()
@@ -112,7 +119,8 @@ export default function Page() {
         const assistantMessage: Message = { id: crypto.randomUUID(), role: 'assistant', content: data.message, timestamp: Date.now(), source: 'voice' }
         conversationRef.current = [...conversationRef.current, assistantMessage]
         setMessages((current) => [...current, assistantMessage])
-        await speak(data.message)
+        console.log('[SHAGNEX] Gemini response received; showing text immediately')
+        void speak(data.message)
       } finally { window.clearTimeout(timeout) }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return

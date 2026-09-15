@@ -16,6 +16,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Voice service is not configured.' }, { status: 503 })
     }
 
+    console.time('[SHAGNEX] Voice')
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
       method: 'POST',
       headers: {
@@ -30,6 +31,7 @@ export async function POST(request: Request) {
       }),
     })
 
+    console.timeEnd('[SHAGNEX] Voice')
     if (!response.ok) {
       return NextResponse.json({ error: 'Voice generation failed.' }, { status: 502 })
     }
